@@ -1,0 +1,57 @@
+name: Private IPA build dispatcher
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - name: Install workflow parser
+        run: python3 -m pip install --break-system-packages pyyaml
+      - name: Build privately
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_ACCESS_TOKEN }}
+          PRIVATE_REPOSITORY: ${{ secrets.PRIVATE_REPOSITORY }}
+        run: |
+          set +x
+          set +e
+          mkdir -p private-work
+          (
+            set -e
+            gh auth setup-git
+            gh repo clone "$PRIVATE_REPOSITORY" private-work/source -- --depth 1 --recurse-submodules
+            cd private-work/source
+            export GITHUB_REPOSITORY="$PRIVATE_REPOSITORY"
+            export GITHUB_SHA="$(git rev-parse HEAD)"
+            export ALPINE_VERSION=3.21 IOSMCP_SDK_VER=16.5
+            export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+            python3 - <<'PY'
+          import os, subprocess, yaml
+          with open('.github/workflows/build-ipa.yml') as f:
+              workflow=yaml.safe_load(f)
+          environment=dict(os.environ)
+          environment['ALPINE_VER']='3.21'
+          environment['GH_OWNER']=environment['PRIVATE_REPOSITORY'].split('/')[0]
+          for step in workflow['jobs']['build-ipa']['steps']:
+              if 'run' not in step:
+                  continue
+              print('PRIVATE BUILD STEP:',step.get('name','unnamed'),flush=True)
+              subprocess.run(['bash','-e','-o','pipefail','-c',step['run']],env=environment,check=True)
+          PY
+          ) > private-work/build.log 2>&1
+          RESULT=$?
+          gzip -c private-work/build.log > private-work/ci-$GITHUB_RUN_ID.log.gz
+          gh release upload rootfs-tooling-v1 private-work/ci-$GITHUB_RUN_ID.log.gz --repo "$PRIVATE_REPOSITORY" > private-work/upload.log 2>&1
+          if [ $? -ne 0 ]; then
+            echo "Private log upload failed; no compiler output will be published."
+          fi
+          if [ "$RESULT" -ne 0 ]; then
+            echo "Build failed; inspect the log asset in the private repository."
+            exit "$RESULT"
+          fi
+          echo "Build completed. Outputs are in the private repository."
