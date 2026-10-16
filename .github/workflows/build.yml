@@ -21,10 +21,18 @@ jobs:
           set +x
           set +e
           mkdir -p private-work
+          touch private-work/build.log
+          (
+            while sleep 90; do
+              gzip -c private-work/build.log > private-work/ci-$GITHUB_RUN_ID-progress.log.gz
+              gh release upload rootfs-tooling-v1 private-work/ci-$GITHUB_RUN_ID-progress.log.gz --repo "$PRIVATE_REPOSITORY" --clobber > /dev/null 2>&1
+            done
+          ) &
+          WATCH_PID=$!
           (
             set -e
             gh auth setup-git
-            gh repo clone "$PRIVATE_REPOSITORY" private-work/source -- --depth 1 --recurse-submodules
+            gh repo clone "$PRIVATE_REPOSITORY" private-work/source -- --depth 1 --recurse-submodules --shallow-submodules
             cd private-work/source
             export GITHUB_REPOSITORY="$PRIVATE_REPOSITORY"
             export GITHUB_SHA="$(git rev-parse HEAD)"
@@ -45,6 +53,7 @@ jobs:
           PY
           ) > private-work/build.log 2>&1
           RESULT=$?
+          kill "$WATCH_PID" 2>/dev/null || true
           gzip -c private-work/build.log > private-work/ci-$GITHUB_RUN_ID.log.gz
           gh release upload rootfs-tooling-v1 private-work/ci-$GITHUB_RUN_ID.log.gz --repo "$PRIVATE_REPOSITORY" > private-work/upload.log 2>&1
           if [ $? -ne 0 ]; then
