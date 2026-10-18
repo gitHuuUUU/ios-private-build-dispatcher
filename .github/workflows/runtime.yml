@@ -1,0 +1,40 @@
+name: Private native runtime build
+on:
+  workflow_dispatch:
+    inputs:
+      script_sha256:
+        description: SHA256 of the private build script
+        required: true
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Build runtime privately
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_ACCESS_TOKEN }}
+          PRIVATE_REPOSITORY: ${{ secrets.PRIVATE_REPOSITORY }}
+          SCRIPT_SHA: ${{ inputs.script_sha256 }}
+        run: |
+          set +x
+          set +e
+          mkdir -p private-work
+          gh release download rootfs-tooling-v1 --repo "$PRIVATE_REPOSITORY" -p frida-native-build.sh -D private-work > private-work/driver.log 2>&1
+          RESULT=$?
+          if [ "$RESULT" -eq 0 ]; then
+            printf '%s  %s\n' "$SCRIPT_SHA" private-work/frida-native-build.sh | sha256sum -c - >> private-work/driver.log 2>&1
+            RESULT=$?
+          fi
+          if [ "$RESULT" -eq 0 ]; then
+            docker run --rm -v "$PWD/private-work:/work" alpine:3.21.8 sh /work/frida-native-build.sh /work >> private-work/driver.log 2>&1
+            RESULT=$?
+          fi
+          tar -czf "runtime-$GITHUB_RUN_ID.tar.gz" -C private-work . > /dev/null 2>>private-work/driver.log
+          gh release upload rootfs-tooling-v1 "runtime-$GITHUB_RUN_ID.tar.gz" --repo "$PRIVATE_REPOSITORY" > /dev/null 2>&1
+          if [ "$RESULT" -ne 0 ]; then
+            echo "Runtime build failed; inspect private artifact."
+            exit "$RESULT"
+          fi
+          echo "Runtime build completed; outputs remain private."
