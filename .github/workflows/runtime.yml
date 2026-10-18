@@ -3,8 +3,20 @@ on:
   workflow_dispatch:
     inputs:
       script_sha256:
-        description: SHA256 of the private build script
+        description: SHA256 of the private script
         required: true
+      script_asset:
+        description: Private Release script asset
+        required: false
+        default: frida-native-build.sh
+      payload_asset:
+        description: Optional private Release payload archive
+        required: false
+        default: ""
+      payload_sha256:
+        description: SHA256 of optional payload
+        required: false
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -12,29 +24,45 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     steps:
-      - name: Build runtime privately
+      - name: Run private ARM64 workload
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_ACCESS_TOKEN }}
           PRIVATE_REPOSITORY: ${{ secrets.PRIVATE_REPOSITORY }}
           SCRIPT_SHA: ${{ inputs.script_sha256 }}
+          SCRIPT_ASSET: ${{ inputs.script_asset }}
+          PAYLOAD_ASSET: ${{ inputs.payload_asset }}
+          PAYLOAD_SHA: ${{ inputs.payload_sha256 }}
         run: |
           set +x
           set +e
           mkdir -p private-work
-          gh release download rootfs-tooling-v1 --repo "$PRIVATE_REPOSITORY" -p frida-native-build.sh -D private-work > private-work/driver.log 2>&1
+          gh release download rootfs-tooling-v1 --repo "$PRIVATE_REPOSITORY" -p "$SCRIPT_ASSET" -D private-work > private-work/driver.log 2>&1
           RESULT=$?
           if [ "$RESULT" -eq 0 ]; then
-            printf '%s  %s\n' "$SCRIPT_SHA" private-work/frida-native-build.sh | sha256sum -c - >> private-work/driver.log 2>&1
+            printf '%s  %s\n' "$SCRIPT_SHA" "private-work/$SCRIPT_ASSET" | sha256sum -c - >> private-work/driver.log 2>&1
             RESULT=$?
           fi
+          if [ "$RESULT" -eq 0 ] && [ -n "$PAYLOAD_ASSET" ]; then
+            gh release download rootfs-tooling-v1 --repo "$PRIVATE_REPOSITORY" -p "$PAYLOAD_ASSET" -D private-work >> private-work/driver.log 2>&1
+            RESULT=$?
+            if [ "$RESULT" -eq 0 ]; then
+              printf '%s  %s\n' "$PAYLOAD_SHA" "private-work/$PAYLOAD_ASSET" | sha256sum -c - >> private-work/driver.log 2>&1
+              RESULT=$?
+            fi
+            if [ "$RESULT" -eq 0 ]; then
+              tar -xzf "private-work/$PAYLOAD_ASSET" -C private-work >> private-work/driver.log 2>&1
+              RESULT=$?
+            fi
+          fi
           if [ "$RESULT" -eq 0 ]; then
-            docker run --rm -v "$PWD/private-work:/work" alpine:3.21.8 sh /work/frida-native-build.sh /work >> private-work/driver.log 2>&1
+            docker run --rm -v "$PWD/private-work:/work" alpine:3.21.8 sh "/work/$SCRIPT_ASSET" /work >> private-work/driver.log 2>&1
             RESULT=$?
           fi
           tar -czf "runtime-$GITHUB_RUN_ID.tar.gz" -C private-work . > /dev/null 2>>private-work/driver.log
           gh release upload rootfs-tooling-v1 "runtime-$GITHUB_RUN_ID.tar.gz" --repo "$PRIVATE_REPOSITORY" > /dev/null 2>&1
           if [ "$RESULT" -ne 0 ]; then
-            echo "Runtime build failed; inspect private artifact."
+            echo "Runtime workload failed; inspect private artifact."
             exit "$RESULT"
           fi
-          echo "Runtime build completed; outputs remain private."
+          echo "Runtime workload completed; outputs remain private."
+
